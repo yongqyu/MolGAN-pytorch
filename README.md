@@ -13,8 +13,7 @@ This library refers to the following two source code.
 
 ## Structure
 * [data](https://github.com/yongqyu/MolGAN-pytroch/tree/master/data): should contain your datasets. If you run `download_dataset.sh` the script will download the dataset used for the paper (then you should run `data/sparse_molecular_dataset.py` to conver the dataset in a graph format used by MolGAN models).
-* [models](https://github.com/yongqyu/MolGAN-pytroch/tree/master/models): Class for Models.
-* [optimizers](https://github.com/yongqyu/MolGAN-pytroch/tree/master/optimizers): Class for Optimizers.
+* [models](https://github.com/yongqyu/MolGAN-pytorch/blob/master/models.py): Class for Models.
 
 ## Usage
 ```

@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from layers import GraphConvolution, GraphAggregation
 
 
 class ResidualBlock(nn.Module):
@@ -46,25 +47,37 @@ class Generator(nn.Module):
 
 class Discriminator(nn.Module):
     """Discriminator network with PatchGAN."""
-    def __init__(self, image_size=128, conv_dim=64, c_dim=5, repeat_num=6):
+    def __init__(self, conv_dim, z_dim, dropout):
         super(Discriminator, self).__init__()
+
+        graph_conv_dim, aux_dim, linear_dim = conv_dim
+        # discriminator
         layers = []
-        layers.append(nn.Conv2d(3, conv_dim, kernel_size=4, stride=2, padding=1))
-        layers.append(nn.LeakyReLU(0.01))
+        for c0, c1 in zip([z_dim]+graph_conv_dim[:-1], graph_conv_dim):
+            layers.append(GraphConvolution(c0,c1))
+        self.gcn_layer = nn.Sequential(*layers)
+        self.agg_layer = GraphAggregation(graph_conv_dim[-1], aux_dim, dropout)
 
-        curr_dim = conv_dim
-        for i in range(1, repeat_num):
-            layers.append(nn.Conv2d(curr_dim, curr_dim*2, kernel_size=4, stride=2, padding=1))
-            layers.append(nn.LeakyReLU(0.01))
-            curr_dim = curr_dim * 2
+        # multi dense layer
+        layers = []
+        for c0, c1 in zip([aux_dim]+linear_dim[:-1], linear_dim):
+            layers.append(nn.Linear(c0,c1))
+            layers.append(nn.Dropout(dropout))
+        self.linear_layer = nn.Sequential(*layers)
 
-        kernel_size = int(image_size / np.power(2, repeat_num))
-        self.main = nn.Sequential(*layers)
-        self.conv1 = nn.Conv2d(curr_dim, 1, kernel_size=3, stride=1, padding=1, bias=False)
-        self.conv2 = nn.Conv2d(curr_dim, c_dim, kernel_size=kernel_size, bias=False)
+        self.output_layer = nn.Linear(linear_dim[-1], 1)
 
-    def forward(self, x):
-        h = self.main(x)
-        out_src = self.conv1(h)
-        out_cls = self.conv2(h)
-        return out_src, out_cls.view(out_cls.size(0), out_cls.size(1))
+    def forward(self, adj, hidden, node):
+        annotations = torch.cat((hidden, node), -1) if hidden is not None else node
+        h = self.gcn_layer(annotations, adj)
+        annotations = torch.cat((h, hidden, node) if hidden is not None\
+                                 else (h, node), -1)
+        h = self.agg_layer(annotations, nn.tanh)
+        h = self.linear_layer(h)
+
+        # Need to implemente batch discriminator #
+        ##########################################
+
+        output = self.output_layer(h)
+
+        return output, h

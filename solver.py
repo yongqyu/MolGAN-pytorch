@@ -39,7 +39,6 @@ class Solver(object):
         self.beta1 = config.beta1
         self.beta2 = config.beta2
         self.resume_iters = config.resume_iters
-        self.selected_attrs = config.selected_attrs
 
         # Test configurations.
         self.test_iters = config.test_iters
@@ -72,15 +71,18 @@ class Solver(object):
                            self.data_loader.dataset.data.bond_num_types,
                            self.data_loader.dataset.data.atom_num_types,
                            self.dropout)
-        self.D = Discriminator(self.image_size, self.d_conv_dim, self.z_dim, self.d_repeat_num)
+        self.D = Discriminator(self.d_conv_dim, self.z_dim, self.dropout)
+        self.V = Discriminator(self.d_conv_dim, self.z_dim, self.dropout)
 
         self.g_optimizer = torch.optim.Adam(self.G.parameters(), self.g_lr, [self.beta1, self.beta2])
-        self.d_optimizer = torch.optim.Adam(self.D.parameters(), self.d_lr, [self.beta1, self.beta2])
+        self.d_optimizer = torch.optim.Adam(list(self.D.parameters())+list(self.V.parameters()),
+                                            self.d_lr, [self.beta1, self.beta2])
         self.print_network(self.G, 'G')
         self.print_network(self.D, 'D')
 
         self.G.to(self.device)
         self.D.to(self.device)
+        self.V.to(self.device)
 
     def print_network(self, model, name):
         """Print out the network information."""
@@ -96,8 +98,10 @@ class Solver(object):
         print('Loading the trained models from step {}...'.format(resume_iters))
         G_path = os.path.join(self.model_save_dir, '{}-G.ckpt'.format(resume_iters))
         D_path = os.path.join(self.model_save_dir, '{}-D.ckpt'.format(resume_iters))
+        V_path = os.path.join(self.model_save_dir, '{}-V.ckpt'.format(resume_iters))
         self.G.load_state_dict(torch.load(G_path, map_location=lambda storage, loc: storage))
         self.D.load_state_dict(torch.load(D_path, map_location=lambda storage, loc: storage))
+        self.V.load_state_dict(torch.load(V_path, map_location=lambda storage, loc: storage))
 
     def build_tensorboard(self):
         """Build a tensorboard logger."""
@@ -142,32 +146,6 @@ class Solver(object):
         out[np.arange(batch_size), labels.long()] = 1
         return out
 
-    def create_labels(self, c_org, z_dim=5, dataset='CelebA', selected_attrs=None):
-        """Generate target domain labels for debugging and testing."""
-        # Get hair color indices.
-        if dataset == 'CelebA':
-            hair_color_indices = []
-            for i, attr_name in enumerate(selected_attrs):
-                if attr_name in ['Black_Hair', 'Blond_Hair', 'Brown_Hair', 'Gray_Hair']:
-                    hair_color_indices.append(i)
-
-        c_trg_list = []
-        for i in range(z_dim):
-            if dataset == 'CelebA':
-                c_trg = c_org.clone()
-                if i in hair_color_indices:  # Set one hair color to 1 and the rest to 0.
-                    c_trg[:, i] = 1
-                    for j in hair_color_indices:
-                        if j != i:
-                            c_trg[:, j] = 0
-                else:
-                    c_trg[:, i] = (c_trg[:, i] == 0)  # Reverse attribute value.
-            elif dataset == 'RaFD':
-                c_trg = self.label2onehot(torch.ones(c_org.size(0))*i, z_dim)
-
-            c_trg_list.append(c_trg.to(self.device))
-        return c_trg_list
-
     def classification_loss(self, logit, target, dataset='CelebA'):
         """Compute binary or softmax cross entropy loss."""
         if dataset == 'CelebA':
@@ -178,16 +156,15 @@ class Solver(object):
     def train(self):
         """Train StarGAN within a single dataset."""
         # Set data loader.
-        if self.dataset == 'CelebA':
-            data_loader = self.celeba_loader
-        elif self.dataset == 'RaFD':
-            data_loader = self.rafd_loader
+        data_loader = self.data_loader
 
         # Fetch fixed inputs for debugging.
+        '''
         data_iter = iter(data_loader)
         x_fixed, c_org = next(data_iter)
         x_fixed = x_fixed.to(self.device)
         c_fixed_list = self.create_labels(c_org, self.z_dim, self.dataset, self.selected_attrs)
+        '''
 
         # Learning rate cache for decaying.
         g_lr = self.g_lr
@@ -202,7 +179,7 @@ class Solver(object):
         # Start training.
         print('Start training...')
         start_time = time.time()
-        for i in range(start_iters, self.num_iters):
+        for i in range(start_iters, self.data_loader.data.train_idx):
 
             # =================================================================================== #
             #                             1. Preprocess input data                                #

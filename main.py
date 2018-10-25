@@ -41,7 +41,7 @@ if __name__ == '__main__':
     # Model configuration.
     parser.add_argument('--z_dim', type=int, default=8, help='dimension of domain labels (1st dataset)')
     parser.add_argument('--g_conv_dim', default=[128,256,512], help='number of conv filters in the first layer of G')
-    parser.add_argument('--d_conv_dim', type=int, default=64, help='number of conv filters in the first layer of D')
+    parser.add_argument('--d_conv_dim', type=int, default=[[128, 64], 128, [128, 64]], help='number of conv filters in the first layer of D')
     parser.add_argument('--g_repeat_num', type=int, default=6, help='number of residual blocks in G')
     parser.add_argument('--d_repeat_num', type=int, default=6, help='number of strided conv layers in D')
     parser.add_argument('--lambda_cls', type=float, default=1, help='weight for domain classification loss')
@@ -59,8 +59,6 @@ if __name__ == '__main__':
     parser.add_argument('--beta1', type=float, default=0.5, help='beta1 for Adam optimizer')
     parser.add_argument('--beta2', type=float, default=0.999, help='beta2 for Adam optimizer')
     parser.add_argument('--resume_iters', type=int, default=None, help='resume training from this step')
-    parser.add_argument('--selected_attrs', '--list', nargs='+', help='selected attributes for the CelebA dataset',
-                        default=['Black_Hair', 'Blond_Hair', 'Brown_Hair', 'Male', 'Young'])
 
     # Test configuration.
     parser.add_argument('--test_iters', type=int, default=200000, help='test model from this step')
@@ -68,7 +66,7 @@ if __name__ == '__main__':
     # Miscellaneous.
     parser.add_argument('--num_workers', type=int, default=1)
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'test'])
-    parser.add_argument('--use_tensorboard', type=str2bool, default=True)
+    parser.add_argument('--use_tensorboard', type=str2bool, default=False)
 
     # Directories.
     parser.add_argument('--mol_data_dir', type=str, default='data/gdb9_9nodes.sparsedataset')
