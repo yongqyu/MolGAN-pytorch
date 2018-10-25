@@ -1,25 +1,31 @@
-from models import Generator, Discriminator
-from torch.autograd import Variable
-from torchvision.utils import save_image
-import torch
-import torch.nn.functional as F
 import numpy as np
 import os
 import time
 import datetime
 
+import torch
+import torch.nn.functional as F
+from torch.autograd import Variable
+from torchvision.utils import save_image
+
+from models import Generator, Discriminator
+from data.sparse_molecular_dataset import SparseMolecularDataset
+
 
 class Solver(object):
     """Solver for training and testing StarGAN."""
 
-    def __init__(self, mol_loader, config):
+    def __init__(self, config):
         """Initialize configurations."""
 
         # Data loader.
-        self.data_loader = mol_loader
+        self.data = SparseMolecularDataset()
+        self.data.load(config.mol_data_dir)
 
         # Model configurations.
         self.z_dim = config.z_dim
+        self.m_dim = config.m_dim
+        self.b_dim = config.b_dim
         self.g_conv_dim = config.g_conv_dim
         self.d_conv_dim = config.d_conv_dim
         self.g_repeat_num = config.g_repeat_num
@@ -67,12 +73,12 @@ class Solver(object):
     def build_model(self):
         """Create a generator and a discriminator."""
         self.G = Generator(self.g_conv_dim, self.z_dim,
-                           self.data_loader.dataset.data.vertexes,
-                           self.data_loader.dataset.data.bond_num_types,
-                           self.data_loader.dataset.data.atom_num_types,
+                           self.data.vertexes,
+                           self.data.bond_num_types,
+                           self.data.atom_num_types,
                            self.dropout)
-        self.D = Discriminator(self.d_conv_dim, self.z_dim, self.dropout)
-        self.V = Discriminator(self.d_conv_dim, self.z_dim, self.dropout)
+        self.D = Discriminator(self.d_conv_dim, self.m_dim, self.dropout)
+        self.V = Discriminator(self.d_conv_dim, self.m_dim, self.dropout)
 
         self.g_optimizer = torch.optim.Adam(self.G.parameters(), self.g_lr, [self.beta1, self.beta2])
         self.d_optimizer = torch.optim.Adam(list(self.D.parameters())+list(self.V.parameters()),
@@ -153,10 +159,11 @@ class Solver(object):
         elif dataset == 'RaFD':
             return F.cross_entropy(logit, target)
 
+    def sample_z(self, batch_size):
+        return np.random.normal(0, 1, size=(batch_size, self.z_dim))
+
     def train(self):
         """Train StarGAN within a single dataset."""
-        # Set data loader.
-        data_loader = self.data_loader
 
         # Fetch fixed inputs for debugging.
         '''
@@ -179,42 +186,27 @@ class Solver(object):
         # Start training.
         print('Start training...')
         start_time = time.time()
-        for i in range(start_iters, self.data_loader.data.train_idx):
+        for i in range(start_iters, self.num_iters):
+            mols, _, _, a, x, _, _, _, _ = self.data.next_train_batch(self.batch_size)
+            z = self.sample_z(self.batch_size)
 
             # =================================================================================== #
             #                             1. Preprocess input data                                #
             # =================================================================================== #
 
-            # Fetch real images and labels.
-            try:
-                x_real, label_org = next(data_iter)
-            except:
-                data_iter = iter(data_loader)
-                x_real, label_org = next(data_iter)
-
-            # Generate target domain labels randomly.
-            rand_idx = torch.randperm(label_org.size(0))
-            label_trg = label_org[rand_idx]
-
-            if self.dataset == 'CelebA':
-                c_org = label_org.clone()
-                c_trg = label_trg.clone()
-            elif self.dataset == 'RaFD':
-                c_org = self.label2onehot(label_org, self.z_dim)
-                c_trg = self.label2onehot(label_trg, self.z_dim)
-
-            x_real = x_real.to(self.device)           # Input images.
-            c_org = c_org.to(self.device)             # Original domain labels.
-            c_trg = c_trg.to(self.device)             # Target domain labels.
-            label_org = label_org.to(self.device)     # Labels for computing classification loss.
-            label_trg = label_trg.to(self.device)     # Labels for computing classification loss.
+            #mols = torch.from_numpy(mols).to(self.device)             # Molecules Index.
+            a = torch.from_numpy(a).to(self.device).float()            # Adjacency.
+            x = torch.from_numpy(x).to(self.device).float()            # Nodes.
+            a_tensor = self.label2onehot(a, self.b_dim)
+            x_tensor = self.label2onehot(x, self.m_dim)
 
             # =================================================================================== #
             #                             2. Train the discriminator                              #
             # =================================================================================== #
 
             # Compute loss with real images.
-            out_src, out_cls = self.D(x_real)
+            output, h = self.D(a, None, x)
+            print(output.size(), h.size())
             d_loss_real = - torch.mean(out_src)
             d_loss_cls = self.classification_loss(out_cls, label_org, self.dataset)
 

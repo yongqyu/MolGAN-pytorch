@@ -22,12 +22,8 @@ def main(config):
     if not os.path.exists(config.result_dir):
         os.makedirs(config.result_dir)
 
-    # Data loader.
-    mol_loader = get_loader(config.mol_data_dir, config.batch_size,
-                            config.mode, config.num_workers)
-
     # Solver for training and testing StarGAN.
-    solver = Solver(mol_loader, config)
+    solver = Solver(config)
 
     if config.mode == 'train':
         solver.train()
@@ -39,7 +35,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
 
     # Model configuration.
-    parser.add_argument('--z_dim', type=int, default=8, help='dimension of domain labels (1st dataset)')
+    parser.add_argument('--z_dim', type=int, default=8, help='dimension of domain labels')
+    parser.add_argument('--m_dim', type=int, default=9, help='number of moleculars')
+    parser.add_argument('--b_dim', type=int, default=4, help='number of bond types')
     parser.add_argument('--g_conv_dim', default=[128,256,512], help='number of conv filters in the first layer of G')
     parser.add_argument('--d_conv_dim', type=int, default=[[128, 64], 128, [128, 64]], help='number of conv filters in the first layer of D')
     parser.add_argument('--g_repeat_num', type=int, default=6, help='number of residual blocks in G')

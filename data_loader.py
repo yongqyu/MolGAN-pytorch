@@ -19,11 +19,11 @@ class SparseMoleCular(data.Dataset):
     def __getitem__(self, index):
         """Return one image and its corresponding attribute label."""
 
-        return [index, self.data.data[index], self.data.smiles[index],
-                self.data.data_S[index], self.data.data_A[index],
-                self.data.data_X[index], self.data.data_D[index],
-                self.data.data_F[index], self.data.data_Le[index],
-                self.data.data_Lv[index]]
+        return index, self.data.data[index], self.data.smiles[index],\
+               self.data.data_S[index], self.data.data_A[index],\
+               self.data.data_X[index], self.data.data_D[index],\
+               self.data.data_F[index], self.data.data_Le[index],\
+               self.data.data_Lv[index]
 
     def __len__(self):
         """Return the number of images."""

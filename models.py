@@ -47,15 +47,12 @@ class Generator(nn.Module):
 
 class Discriminator(nn.Module):
     """Discriminator network with PatchGAN."""
-    def __init__(self, conv_dim, z_dim, dropout):
+    def __init__(self, conv_dim, m_dim, dropout):
         super(Discriminator, self).__init__()
 
         graph_conv_dim, aux_dim, linear_dim = conv_dim
         # discriminator
-        layers = []
-        for c0, c1 in zip([z_dim]+graph_conv_dim[:-1], graph_conv_dim):
-            layers.append(GraphConvolution(c0,c1))
-        self.gcn_layer = nn.Sequential(*layers)
+        self.gcn_layer = GraphConvolution(m_dim, graph_conv_dim, dropout)
         self.agg_layer = GraphAggregation(graph_conv_dim[-1], aux_dim, dropout)
 
         # multi dense layer
@@ -72,7 +69,7 @@ class Discriminator(nn.Module):
         h = self.gcn_layer(annotations, adj)
         annotations = torch.cat((h, hidden, node) if hidden is not None\
                                  else (h, node), -1)
-        h = self.agg_layer(annotations, nn.tanh)
+        h = self.agg_layer(annotations, F.tanh)
         h = self.linear_layer(h)
 
         # Need to implemente batch discriminator #
