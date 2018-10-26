@@ -24,8 +24,8 @@ class Solver(object):
 
         # Model configurations.
         self.z_dim = config.z_dim
-        self.m_dim = config.m_dim
-        self.b_dim = config.b_dim
+        self.m_dim = self.data.atom_num_types
+        self.b_dim = self.data.bond_num_types
         self.g_conv_dim = config.g_conv_dim
         self.d_conv_dim = config.d_conv_dim
         self.g_repeat_num = config.g_repeat_num
@@ -77,8 +77,8 @@ class Solver(object):
                            self.data.bond_num_types,
                            self.data.atom_num_types,
                            self.dropout)
-        self.D = Discriminator(self.d_conv_dim, self.m_dim, self.dropout)
-        self.V = Discriminator(self.d_conv_dim, self.m_dim, self.dropout)
+        self.D = Discriminator(self.d_conv_dim, self.m_dim, self.b_dim, self.dropout)
+        self.V = Discriminator(self.d_conv_dim, self.m_dim, self.b_dim, self.dropout)
 
         self.g_optimizer = torch.optim.Adam(self.G.parameters(), self.g_lr, [self.beta1, self.beta2])
         self.d_optimizer = torch.optim.Adam(list(self.D.parameters())+list(self.V.parameters()),
@@ -147,9 +147,8 @@ class Solver(object):
 
     def label2onehot(self, labels, dim):
         """Convert label indices to one-hot vectors."""
-        batch_size = labels.size(0)
-        out = torch.zeros(batch_size, dim)
-        out[np.arange(batch_size), labels.long()] = 1
+        out = torch.zeros(list(labels.size())+[dim]).to(self.device)
+        out.scatter_(len(out.size())-1,labels.unsqueeze(-1),1.)
         return out
 
     def classification_loss(self, logit, target, dataset='CelebA'):
@@ -195,24 +194,27 @@ class Solver(object):
             # =================================================================================== #
 
             #mols = torch.from_numpy(mols).to(self.device)             # Molecules Index.
-            a = torch.from_numpy(a).to(self.device).float()            # Adjacency.
-            x = torch.from_numpy(x).to(self.device).float()            # Nodes.
+            a = torch.from_numpy(a).to(self.device).long()            # Adjacency.
+            x = torch.from_numpy(x).to(self.device).long()            # Nodes.
             a_tensor = self.label2onehot(a, self.b_dim)
             x_tensor = self.label2onehot(x, self.m_dim)
+            z = torch.from_numpy(z).to(self.device).float()
 
             # =================================================================================== #
             #                             2. Train the discriminator                              #
             # =================================================================================== #
 
             # Compute loss with real images.
-            output, h = self.D(a, None, x)
-            print(output.size(), h.size())
-            d_loss_real = - torch.mean(out_src)
-            d_loss_cls = self.classification_loss(out_cls, label_org, self.dataset)
+            logits_real, features_real = self.D(a_tensor, None, x_tensor)
+            #d_loss_real = - torch.mean(out_src)
+            #d_loss_cls = self.classification_loss(out_cls, label_org, self.dataset)
 
             # Compute loss with fake images.
-            x_fake = self.G(x_real, c_trg)
-            out_src, out_cls = self.D(x_fake.detach())
+            edges_logits, nodes_logits = self.G(z)
+
+            # Postprocess with Gumbel softmax
+
+            out_src, out_cls = self.D(edges_hat, None, nodes_hat)
             d_loss_fake = torch.mean(out_src)
 
             # Compute loss for gradient penalty.
