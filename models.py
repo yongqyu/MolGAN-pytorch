@@ -72,7 +72,7 @@ class Discriminator(nn.Module):
 
         self.output_layer = nn.Linear(linear_dim[-1], 1)
 
-    def forward(self, adj, hidden, node):
+    def forward(self, adj, hidden, node, activatation=None):
         adj = adj[:,:,:,1:].permute(0,3,1,2)
         annotations = torch.cat((hidden, node), -1) if hidden is not None else node
         h = self.gcn_layer(annotations, adj)
@@ -85,5 +85,6 @@ class Discriminator(nn.Module):
         ##########################################
 
         output = self.output_layer(h)
+        output = activatation(output) if activatation is not None else output
 
         return output, h

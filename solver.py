@@ -8,6 +8,7 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torchvision.utils import save_image
 
+from utils import *
 from models import Generator, Discriminator
 from data.sparse_molecular_dataset import SparseMolecularDataset
 
@@ -33,6 +34,9 @@ class Solver(object):
         self.lambda_cls = config.lambda_cls
         self.lambda_rec = config.lambda_rec
         self.lambda_gp = config.lambda_gp
+        self.post_method = config.post_method
+
+        self.metric = 'validity,sas'
 
         # Training configurations.
         self.batch_size = config.batch_size
@@ -161,6 +165,55 @@ class Solver(object):
     def sample_z(self, batch_size):
         return np.random.normal(0, 1, size=(batch_size, self.z_dim))
 
+    def postprocess(self, inputs, method, temperature=1.):
+
+        def listify(x):
+            return x if type(x) == list or type(x) == tuple else [x]
+
+        def delistify(x):
+            return x if len(x) > 1 else x[0]
+
+        if method == 'soft_gumbel':
+            softmax = [F.gumbel_softmax(e_logits.contiguous().view(-1,e_logits.size(-1))
+                       / temperature, hard=False).view(e_logits.size())
+                       for e_logits in listify(inputs)]
+        elif method == 'hard_gumbel':
+            softmax = [F.gumbel_softmax(e_logits.contiguous().view(-1,e_logits.size(-1))
+                       / temperature, hard=True).view(e_logits.size())
+                       for e_logits in listify(inputs)]
+        else:
+            softmax = [F.softmax(e_logits / temperature)
+                       for e_logits in listify(inputs)]
+
+        return [delistify(e) for e in (softmax)]
+
+    def reward(self, mols):
+        rr = 1.
+        for m in ('logp,sas,qed,unique' if self.metric == 'all' else self.metric).split(','):
+
+            if m == 'np':
+                rr *= MolecularMetrics.natural_product_scores(mols, norm=True)
+            elif m == 'logp':
+                rr *= MolecularMetrics.water_octanol_partition_coefficient_scores(mols, norm=True)
+            elif m == 'sas':
+                rr *= MolecularMetrics.synthetic_accessibility_score_scores(mols, norm=True)
+            elif m == 'qed':
+                rr *= MolecularMetrics.quantitative_estimation_druglikeness_scores(mols, norm=True)
+            elif m == 'novelty':
+                rr *= MolecularMetrics.novel_scores(mols, data)
+            elif m == 'dc':
+                rr *= MolecularMetrics.drugcandidate_scores(mols, data)
+            elif m == 'unique':
+                rr *= MolecularMetrics.unique_scores(mols)
+            elif m == 'diversity':
+                rr *= MolecularMetrics.diversity_scores(mols, data)
+            elif m == 'validity':
+                rr *= MolecularMetrics.valid_scores(mols)
+            else:
+                raise RuntimeError('{} is not defined as a metric'.format(m))
+
+        return rr.reshape(-1, 1)
+
     def train(self):
         """Train StarGAN within a single dataset."""
 
@@ -193,7 +246,6 @@ class Solver(object):
             #                             1. Preprocess input data                                #
             # =================================================================================== #
 
-            #mols = torch.from_numpy(mols).to(self.device)             # Molecules Index.
             a = torch.from_numpy(a).to(self.device).long()            # Adjacency.
             x = torch.from_numpy(x).to(self.device).long()            # Nodes.
             a_tensor = self.label2onehot(a, self.b_dim)
@@ -206,25 +258,23 @@ class Solver(object):
 
             # Compute loss with real images.
             logits_real, features_real = self.D(a_tensor, None, x_tensor)
-            #d_loss_real = - torch.mean(out_src)
             #d_loss_cls = self.classification_loss(out_cls, label_org, self.dataset)
 
             # Compute loss with fake images.
             edges_logits, nodes_logits = self.G(z)
-
             # Postprocess with Gumbel softmax
-
-            out_src, out_cls = self.D(edges_hat, None, nodes_hat)
-            d_loss_fake = torch.mean(out_src)
+            (edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
+            logits_fake, features_fake = self.D(edges_hat, None, nodes_hat)
 
             # Compute loss for gradient penalty.
-            alpha = torch.rand(x_real.size(0), 1, 1, 1).to(self.device)
-            x_hat = (alpha * x_real.data + (1 - alpha) * x_fake.data).requires_grad_(True)
-            out_src, _ = self.D(x_hat)
-            d_loss_gp = self.gradient_penalty(out_src, x_hat)
+            eps = torch.rand(logits_real.size(0),1,1,1).to(self.device)
+            x_int0 = (eps * a_tensor + (1. - eps) * edges_hat).requires_grad_(True)
+            x_int1 = (eps * x_tensor + (1. - eps) * nodes_hat).requires_grad_(True)
+            grad0, grad1 = self.D(x_int0, None, x_int1)
+            grad0, grad1 = self.gradient_penalty(grad0, x_int0), self.gradient_penalty(grad1, x_int1)
 
             # Backward and optimize.
-            d_loss = d_loss_real + d_loss_fake + self.lambda_cls * d_loss_cls + self.lambda_gp * d_loss_gp
+            d_loss = torch.mean(torch.abs(-logit_real + logit_fake + self.lambda_gp * d_loss_gp))
             self.reset_grad()
             d_loss.backward()
             self.d_optimizer.step()
@@ -241,18 +291,31 @@ class Solver(object):
             # =================================================================================== #
 
             if (i+1) % self.n_critic == 0:
-                # Original-to-target domain.
-                x_fake = self.G(x_real, c_trg)
-                out_src, out_cls = self.D(x_fake)
-                g_loss_fake = - torch.mean(out_src)
-                g_loss_cls = self.classification_loss(out_cls, label_trg, self.dataset)
+                edges_logits, nodes_logits = self.G(z)
+                # Postprocess with Gumbel softmax
+                (edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
+                logits_fake, features_fake = self.D(edges_hat, None, nodes_hat)
 
-                # Target-to-original domain.
-                x_reconst = self.G(x_fake, c_org)
-                g_loss_rec = torch.mean(torch.abs(x_real - x_reconst))
+                # Real Reward
+                rewardR = torch.from_numpy(self.reward(mols))             # Molecules Index.
+                # Fake Reward
+                (edges_hard, nodes_hard) = self.postprocess((edges_logits, nodes_logits), 'hard_gumbel')
+                edges_hard, nodes_hard = torch.max(edge_hard, -1)[0], torch.max(nodes_hard, -1)[0]
+                mols = [self.data.matrices2mol(n_, e_, strict=True) for e_, n_ in zip(edges_hard, nodes_hard)]
+                rewardF = self.reward(mols)
+
+                # Value
+                value_logit_real,_ = self.V(a_tensor, None, x_tensor, F.sigmoid)
+                value_logit_fake,_ = self.V(edges_hat, None, nodes_hat, F.sigmoid)
+
+                g_loss = -logit_fake
+                v_loss = (value_logit_real - rewardR) ** 2 + (
+                          value_logit_fake - rewardF) ** 2
+                #rl_loss= -value_logit_fake
+                #f_loss = (torch.mean(features_real, 0) - torch.mean(features_fake, 0)) ** 2
 
                 # Backward and optimize.
-                g_loss = g_loss_fake + self.lambda_rec * g_loss_rec + self.lambda_cls * g_loss_cls
+                g_loss = torch.mean(torch.abs(g_loss+v_loss))
                 self.reset_grad()
                 g_loss.backward()
                 self.g_optimizer.step()
