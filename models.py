@@ -78,7 +78,7 @@ class Discriminator(nn.Module):
         h = self.gcn_layer(annotations, adj)
         annotations = torch.cat((h, hidden, node) if hidden is not None\
                                  else (h, node), -1)
-        h = self.agg_layer(annotations, F.tanh)
+        h = self.agg_layer(annotations, torch.tanh)
         h = self.linear_layer(h)
 
         # Need to implemente batch discriminator #

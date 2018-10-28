@@ -84,9 +84,9 @@ class Solver(object):
         self.D = Discriminator(self.d_conv_dim, self.m_dim, self.b_dim, self.dropout)
         self.V = Discriminator(self.d_conv_dim, self.m_dim, self.b_dim, self.dropout)
 
-        self.g_optimizer = torch.optim.Adam(self.G.parameters(), self.g_lr, [self.beta1, self.beta2])
-        self.d_optimizer = torch.optim.Adam(list(self.D.parameters())+list(self.V.parameters()),
-                                            self.d_lr, [self.beta1, self.beta2])
+        self.g_optimizer = torch.optim.Adam(list(self.G.parameters())+list(self.V.parameters()),
+                                            self.g_lr, [self.beta1, self.beta2])
+        self.d_optimizer = torch.optim.Adam(self.D.parameters(), self.d_lr, [self.beta1, self.beta2])
         self.print_network(self.G, 'G')
         self.print_network(self.D, 'D')
 
@@ -182,7 +182,7 @@ class Solver(object):
                        / temperature, hard=True).view(e_logits.size())
                        for e_logits in listify(inputs)]
         else:
-            softmax = [F.softmax(e_logits / temperature)
+            softmax = [F.softmax(e_logits / temperature, -1)
                        for e_logits in listify(inputs)]
 
         return [delistify(e) for e in (softmax)]
@@ -258,23 +258,25 @@ class Solver(object):
 
             # Compute loss with real images.
             logits_real, features_real = self.D(a_tensor, None, x_tensor)
-            #d_loss_cls = self.classification_loss(out_cls, label_org, self.dataset)
+            d_loss_real = - torch.mean(logits_real)
 
             # Compute loss with fake images.
             edges_logits, nodes_logits = self.G(z)
             # Postprocess with Gumbel softmax
             (edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
             logits_fake, features_fake = self.D(edges_hat, None, nodes_hat)
+            d_loss_fake = torch.mean(logits_fake)
 
             # Compute loss for gradient penalty.
             eps = torch.rand(logits_real.size(0),1,1,1).to(self.device)
             x_int0 = (eps * a_tensor + (1. - eps) * edges_hat).requires_grad_(True)
-            x_int1 = (eps * x_tensor + (1. - eps) * nodes_hat).requires_grad_(True)
+            x_int1 = (eps.squeeze(-1) * x_tensor + (1. - eps.squeeze(-1)) * nodes_hat).requires_grad_(True)
             grad0, grad1 = self.D(x_int0, None, x_int1)
-            grad0, grad1 = self.gradient_penalty(grad0, x_int0), self.gradient_penalty(grad1, x_int1)
+            d_loss_gp = self.gradient_penalty(grad0, x_int0) + self.gradient_penalty(grad1, x_int1)
+
 
             # Backward and optimize.
-            d_loss = torch.mean(torch.abs(-logit_real + logit_fake + self.lambda_gp * d_loss_gp))
+            d_loss = d_loss_fake + d_loss_real + self.lambda_gp * d_loss_gp
             self.reset_grad()
             d_loss.backward()
             self.d_optimizer.step()
@@ -283,47 +285,47 @@ class Solver(object):
             loss = {}
             loss['D/loss_real'] = d_loss_real.item()
             loss['D/loss_fake'] = d_loss_fake.item()
-            loss['D/loss_cls'] = d_loss_cls.item()
             loss['D/loss_gp'] = d_loss_gp.item()
 
             # =================================================================================== #
             #                               3. Train the generator                                #
             # =================================================================================== #
 
-            if (i+1) % self.n_critic == 0:
+            #if (i+1) % self.n_critic == 0:
+            if (i+1) % 1 == 0:
+                # Z-to-target
                 edges_logits, nodes_logits = self.G(z)
                 # Postprocess with Gumbel softmax
                 (edges_hat, nodes_hat) = self.postprocess((edges_logits, nodes_logits), self.post_method)
                 logits_fake, features_fake = self.D(edges_hat, None, nodes_hat)
+                g_loss_fake = - torch.mean(logits_fake)
 
                 # Real Reward
-                rewardR = torch.from_numpy(self.reward(mols))             # Molecules Index.
+                rewardR = torch.from_numpy(self.reward(mols)).to(self.device)
                 # Fake Reward
                 (edges_hard, nodes_hard) = self.postprocess((edges_logits, nodes_logits), 'hard_gumbel')
-                edges_hard, nodes_hard = torch.max(edge_hard, -1)[0], torch.max(nodes_hard, -1)[0]
-                mols = [self.data.matrices2mol(n_, e_, strict=True) for e_, n_ in zip(edges_hard, nodes_hard)]
-                rewardF = self.reward(mols)
+                edges_hard, nodes_hard = torch.max(edges_hard, -1)[1], torch.max(nodes_hard, -1)[1]
+                mols = [self.data.matrices2mol(n_.data.cpu().numpy(), e_.data.cpu().numpy(), strict=True)
+                        for e_, n_ in zip(edges_hard, nodes_hard)]
+                rewardF = torch.from_numpy(self.reward(mols)).to(self.device)
 
-                # Value
+                # Value loss
                 value_logit_real,_ = self.V(a_tensor, None, x_tensor, F.sigmoid)
                 value_logit_fake,_ = self.V(edges_hat, None, nodes_hat, F.sigmoid)
-
-                g_loss = -logit_fake
-                v_loss = (value_logit_real - rewardR) ** 2 + (
-                          value_logit_fake - rewardF) ** 2
+                g_loss_value = torch.mean((value_logit_real - rewardR) ** 2 + (
+                                           value_logit_fake - rewardF) ** 2)
                 #rl_loss= -value_logit_fake
                 #f_loss = (torch.mean(features_real, 0) - torch.mean(features_fake, 0)) ** 2
 
                 # Backward and optimize.
-                g_loss = torch.mean(torch.abs(g_loss+v_loss))
+                g_loss = g_loss_fake + g_loss_value
                 self.reset_grad()
                 g_loss.backward()
                 self.g_optimizer.step()
 
                 # Logging.
                 loss['G/loss_fake'] = g_loss_fake.item()
-                loss['G/loss_rec'] = g_loss_rec.item()
-                loss['G/loss_cls'] = g_loss_cls.item()
+                loss['G/loss_value'] = g_loss_value.item()
 
             # =================================================================================== #
             #                                 4. Miscellaneous                                    #
